@@ -43,12 +43,14 @@ def generate_query_graph(target_graph, num_nodes_query):
 class Encoder(nn.Module):
     def __init__(self):
         super(Encoder, self).__init__()
-        input_size: int = 201  # 输入的维度（包括填充值）
-        hidden_size: int = 64  # 隐藏层大小
-        num_layers: int = 2  # LSTM层数
+        
+        # 输入 40*40的原始数据
 
-        self.embedding = nn.Embedding(input_size, hidden_size)  # 初始化嵌入层
-        self.lstm = nn.LSTM(hidden_size, hidden_size, num_layers)  # 初始化LSTM层
+        self.embedding = nn.Embedding(num_embeddings=201,embedding_dim=64)  # 初始化嵌入层
+
+        # embed得到 40*40*64的数据
+
+        self.lstm = nn.LSTM(64,40,1)  # 初始化LSTM层
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         embedded = self.embedding(x)  # 嵌入层的前向传播
@@ -59,14 +61,10 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     def __init__(self):
         super(Decoder, self).__init__()
-        self.hidden_size: int = 64
-        self.num_layers: int = 2
-        self.lstm = nn.LSTM(64, 64, 2, batch_first=True)
-        self.fc = nn.Linear(64, 200)
+        self.lstm = nn.LSTM(40,40,1)
 
     def forward(self, x: torch.Tensor, hidden: torch.Tensor, cell: torch.Tensor) -> torch.Tensor:
         output, (hidden, cell) = self.lstm(x, (hidden, cell))
-        output = self.fc(output)
         return output, hidden, cell
 
 class Seq2Seq(nn.Module):
@@ -77,7 +75,7 @@ class Seq2Seq(nn.Module):
 
     def forward(self, source: torch.Tensor) -> torch.Tensor:
         encoder_hidden, encoder_cell = self.encoder(source)
-        decoder_input = torch.tensor([[0]])  # 假设开始符号的索引为0
+        decoder_input = torch.randn(1,40,40)  # 假设开始符号的索引为0
         decoder_hidden, decoder_cell = encoder_hidden, encoder_cell
 
         outputs = []
@@ -86,7 +84,7 @@ class Seq2Seq(nn.Module):
             outputs.append(decoder_output.squeeze(1))
 
             # 使用当前时间步的预测结果作为下一个时间步的输入
-            decoder_input = decoder_output.argmax(2)
+            decoder_input = decoder_output
 
         outputs = torch.stack(outputs, dim=1)
         return outputs
