@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.model_selection import train_test_split
-
+ # encoder(embed +lstm)->(decoder)lstm->output
 def generate_target():
     num_nodes = 200
 
@@ -38,71 +38,67 @@ def generate_query_graph(target_graph, num_nodes_query):
                 query_graph[i,t]=ind_map[v]
                 t+=1
     
-    # Generate the position mapping for the query graph in the target graph
-    position_mapping = {i:node_id for i, node_id in enumerate(selected_nodes)}
-    
-    return query_graph, position_mapping
+    return query_graph, selected_nodes
 
 class Encoder(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers):
+    def __init__(self):
         super(Encoder, self).__init__()
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.embedding = nn.Embedding(input_size, hidden_size)
-        self.lstm = nn.LSTM(hidden_size, hidden_size, num_layers, batch_first=True)
+        input_size: int = 201  # 输入的维度（包括填充值）
+        hidden_size: int = 64  # 隐藏层大小
+        num_layers: int = 2  # LSTM层数
 
-    def forward(self, x):
-        embedded = self.embedding(x)
-        output, (hidden, cell) = self.lstm(embedded)
+        self.embedding = nn.Embedding(input_size, hidden_size)  # 初始化嵌入层
+        self.lstm = nn.LSTM(hidden_size, hidden_size, num_layers)  # 初始化LSTM层
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        embedded = self.embedding(x)  # 嵌入层的前向传播
+        output, (hidden, cell) = self.lstm(embedded)  # LSTM层的前向传播
         return hidden, cell
 
-class Decoder(nn.Module):
-    def __init__(self, input_size, hidden_size, output_size, num_layers):
-        super(Decoder, self).__init__()
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.embedding = nn.Embedding(input_size, hidden_size)
-        self.lstm = nn.LSTM(hidden_size, hidden_size, num_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_size, output_size)
 
-    def forward(self, x, hidden, cell):
-        embedded = self.embedding(x)
-        output, (hidden, cell) = self.lstm(embedded, (hidden, cell))
+class Decoder(nn.Module):
+    def __init__(self):
+        super(Decoder, self).__init__()
+        self.hidden_size: int = 64
+        self.num_layers: int = 2
+        self.lstm = nn.LSTM(64, 64, 2, batch_first=True)
+        self.fc = nn.Linear(64, 200)
+
+    def forward(self, x: torch.Tensor, hidden: torch.Tensor, cell: torch.Tensor) -> torch.Tensor:
+        output, (hidden, cell) = self.lstm(x, (hidden, cell))
         output = self.fc(output)
         return output, hidden, cell
 
 class Seq2Seq(nn.Module):
-    def __init__(self, encoder, decoder):
+    def __init__(self, encoder: Encoder, decoder: Decoder):
         super(Seq2Seq, self).__init__()
         self.encoder = encoder
         self.decoder = decoder
 
-    def forward(self, source, target):
-        batch_size = source.size(0)
-        target_len = target.size(1)
-        target_vocab_size = self.decoder.fc.out_features
+    def forward(self, source: torch.Tensor) -> torch.Tensor:
+        encoder_hidden, encoder_cell = self.encoder(source)
+        decoder_input = torch.tensor([[0]])  # 假设开始符号的索引为0
+        decoder_hidden, decoder_cell = encoder_hidden, encoder_cell
 
-        outputs = torch.zeros(batch_size, target_len, target_vocab_size).to(source.device)
+        outputs = []
+        for t in range(source.size(1)):  # 逐个时间步生成输出
+            decoder_output, decoder_hidden, decoder_cell = self.decoder(decoder_input, decoder_hidden, decoder_cell)
+            outputs.append(decoder_output.squeeze(1))
 
-        hidden, cell = self.encoder(source)
+            # 使用当前时间步的预测结果作为下一个时间步的输入
+            decoder_input = decoder_output.argmax(2)
 
-        decoder_input = target[:, 0] - 1
-
-        for t in range(1, target_len):
-            output, hidden, cell = self.decoder(decoder_input, hidden, cell)
-            outputs[:, t] = output.squeeze(1)
-            decoder_input = output.argmax(2)
-
+        outputs = torch.stack(outputs, dim=1)
         return outputs
-        
+
 def main():
-    # 定义模型和参数
-    hidden_size = 64  # 隐藏层大小
-    num_layers = 2  # LSTM层数
+    # Define model and parameters
+    hidden_size = 64  # Hidden size
+    num_layers = 2  # Number of LSTM layers
     learning_rate = 0.001
     num_epochs = 10
 
-    # 生成训练集和测试集
+    # Generate training and test data
     generate_target()
     target_graph = np.load("target.npy")
     num_samples = 10000
@@ -110,38 +106,36 @@ def main():
     target_positions = []
 
     for _ in range(num_samples):
-        num_nodes_query = np.random.randint(20, 40)  # 随机生成查询图节点数量
+        num_nodes_query = np.random.randint(20, 40)  # Randomly generate the number of nodes in the query graph
         query_graph, position_mapping = generate_query_graph(target_graph, num_nodes_query)
         query_graphs.append(query_graph)
-        target_positions.append([position_mapping[i] for i in range(num_nodes_query)]+[0] * (40 - num_nodes_query))
+        target_positions.append([position_mapping[i] for i in range(num_nodes_query)] + [0] * (40 - num_nodes_query))
 
     query_graphs = np.array(query_graphs)
     target_positions = np.array(target_positions)
 
     X_train, X_test, y_train, y_test = train_test_split(query_graphs, target_positions, test_size=0.2)
 
-    # 定义模型
-    encoder = Encoder(hidden_size, num_layers)
-    decoder = Decoder(hidden_size, num_layers)
+    # Define the model
+    encoder = Encoder()
+    decoder = Decoder()
     model = Seq2Seq(encoder, decoder)
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-    # 训练模型
+    # Train the model
     for epoch in range(num_epochs):
         for i in range(len(X_train)):
             query_graph_tensor = torch.LongTensor(X_train[i])
             target_positions_tensor = torch.Tensor(y_train[i])
 
-            # 前向传播
-            hidden = torch.zeros(num_layers, 1, hidden_size)
-            cell = torch.zeros(num_layers, 1, hidden_size)
-            output, _, _ = model(query_graph_tensor, hidden, cell)
+            # Forward pass
+            output = model(query_graph_tensor)
 
-            # 计算损失
+            # Compute loss
             loss = criterion(output.squeeze(), target_positions_tensor)
 
-            # 反向传播和优化
+            # Backward pass and optimization
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -149,7 +143,7 @@ def main():
             if (i + 1) % 1000 == 0:
                 print(f'Epoch [{epoch + 1}/{num_epochs}], Step [{i + 1}/{len(X_train)}], Loss: {loss.item():.4f}')
 
-    # 在测试集上评估模型准确率
+    # Evaluate the model accuracy on the test set
     correct = 0
     total = 0
 
@@ -158,9 +152,8 @@ def main():
             query_graph_tensor = torch.LongTensor(X_test[i])
             target_positions_tensor = torch.Tensor(y_test[i])
 
-            hidden = torch.zeros(num_layers, 1, hidden_size)
-            cell = torch.zeros(num_layers, 1, hidden_size)
-            output, _, _ = model(query_graph_tensor, hidden, cell)
+            hidden, cell = model.encoder(query_graph_tensor)
+            output = model.decoder(target_positions_tensor.unsqueeze(0), hidden, cell)
             predicted_positions = output.squeeze().round().tolist()
 
             if predicted_positions == y_test[i].tolist():
