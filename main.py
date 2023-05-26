@@ -5,6 +5,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.model_selection import train_test_split
+import torch.nn.functional as F
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
  # encoder(embed +lstm)->(decoder)lstm->output
 def generate_target():
     num_nodes = 200
@@ -94,7 +97,7 @@ def main():
     hidden_size = 64  # Hidden size
     num_layers = 2  # Number of LSTM layers
     learning_rate = 0.001
-    num_epochs = 10
+    num_epochs = 1
 
     # Generate training and test data
     generate_target()
@@ -115,23 +118,34 @@ def main():
     X_train, X_test, y_train, y_test = train_test_split(query_graphs, target_positions, test_size=0.2)
 
     # Define the model
-    encoder = Encoder()
-    decoder = Decoder()
-    model = Seq2Seq(encoder, decoder)
-    criterion = nn.MSELoss()
+    encoder = Encoder().to(device)
+    decoder = Decoder().to(device)
+    model = Seq2Seq(encoder, decoder).to(device)
+    criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
     # Train the model
     for epoch in range(num_epochs):
         for i in range(len(X_train)):
             query_graph_tensor = torch.LongTensor(X_train[i])
-            target_positions_tensor = torch.Tensor(y_train[i])
+            target_positions_tensor = torch.LongTensor(y_train[i])
 
             # Forward pass
-            output = model(query_graph_tensor)
+            output = model(query_graph_tensor).to(device)
+            output_indices = torch.argmax(output, dim=2).squeeze(0)
+
+            y_train_pred = output_indices[:, 0]
 
             # Compute loss
-            loss = criterion(output.squeeze(), target_positions_tensor)
+            class_labels = torch.zeros_like(target_positions_tensor)
+            for j in range(target_positions_tensor.size(0)):
+                indices = torch.where(output_indices[j] == target_positions_tensor[j])[0]
+                if indices.numel() > 0:
+                    class_labels[j] = indices[0]
+
+        # Compute loss
+            loss = criterion(output.view(-1, output.size(2)).transpose(0, 1), class_labels.view(-1))
+
 
             # Backward pass and optimization
             optimizer.zero_grad()
@@ -150,14 +164,28 @@ def main():
             query_graph_tensor = torch.LongTensor(X_test[i])
             target_positions_tensor = torch.Tensor(y_test[i])
 
-            hidden, cell = model.encoder(query_graph_tensor)
-            output = model.decoder(target_positions_tensor.unsqueeze(0), hidden, cell)
-            predicted_positions = output.squeeze().round().tolist()
+            output = model(query_graph_tensor).to(device)
+            output_indices = torch.argmax(output, dim=2).squeeze(0)
 
-            if predicted_positions == y_test[i].tolist():
+            y_test_pred = output_indices[:, 0]
+
+            # 计算相似度分数
+            similarities = []
+            for j in range(len(y_test_pred)):
+              target_idx = y_test[i][j].item()  # 获取目标节点索引
+              predicted_idx = y_test_pred[j].item()  # 获取预测节点索引
+              target_node = torch.Tensor(target_graph[target_idx])  # 转换为张量
+              predicted_node = torch.Tensor(target_graph[predicted_idx])  # 转换为张量
+              # 计算余弦相似度
+              similarity = F.cosine_similarity(target_node, predicted_node, dim=0)
+              similarities.append(similarity.item())
+
+              # 根据相似度分数和阈值判断预测是否正确
+              threshold = 0.6  # 设定相似度阈值
+              if all(similarity >= threshold for similarity in similarities):
                 correct += 1
-            total += 1
 
+              total += 1
     accuracy = correct / total * 100
     print(f'Test Accuracy: {accuracy:.2f}%')
 
